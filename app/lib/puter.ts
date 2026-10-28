@@ -334,8 +334,37 @@ export const usePuterStore = create<PuterStore>((set, get) => {
             return;
         }
 
-        return puter.ai.chat(
-            [
+        const models = ["claude-3-7-sonnet", "claude-3-5-sonnet", "claude-sonnet-4", "gpt-4o"];
+        for (const model of models) {
+            try {
+                const response = await puter.ai.chat(
+                    [
+                        {
+                            role: "user",
+                            content: [
+                                {
+                                    type: "file",
+                                    puter_path: path,
+                                },
+                                {
+                                    type: "text",
+                                    text: message,
+                                },
+                            ],
+                        },
+                    ],
+                    { model }
+                ) as AIResponse | undefined;
+
+                if (response) return response;
+            } catch (err) {
+                console.warn(`Puter AI feedback failed with model ${model}, trying fallback:`, err);
+            }
+        }
+
+        // Final attempt without explicit model
+        try {
+            return (await puter.ai.chat([
                 {
                     role: "user",
                     content: [
@@ -349,9 +378,11 @@ export const usePuterStore = create<PuterStore>((set, get) => {
                         },
                     ],
                 },
-            ],
-            { model: "claude-3-7-sonnet" }
-        ) as Promise<AIResponse | undefined>;
+            ])) as AIResponse | undefined;
+        } catch (finalErr) {
+            console.error("All Puter AI feedback attempts failed:", finalErr);
+            return undefined;
+        }
     };
 
     const img2txt = async (image: string | File | Blob, testMode?: boolean) => {

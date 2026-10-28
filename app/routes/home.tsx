@@ -28,9 +28,16 @@ export default function Home() {
 
       const resumes = (await kv.list('resume:*', true)) as KVItem[];
 
-      const parsedResumes = resumes?.map((resume) => (
-          JSON.parse(resume.value) as Resume
-      ))
+      const parsedResumes = resumes
+          ?.map((resume) => {
+            try {
+              return JSON.parse(resume.value) as Resume;
+            } catch (err) {
+              console.error("Error parsing resume item:", err);
+              return null;
+            }
+          })
+          .filter(Boolean) as Resume[];
 
       setResumes(parsedResumes || []);
       setLoadingResumes(false);

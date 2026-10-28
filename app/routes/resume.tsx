@@ -4,6 +4,8 @@ import {usePuterStore} from "~/lib/puter";
 import Summary from "~/components/Summary";
 import ATS from "~/components/ATS";
 import Details from "~/components/Details";
+import {parseFeedbackJSON, normalizeFeedback} from "~/lib/utils";
+import {prepareInstructions} from "../../constants";
 
 export const meta = () => ([
     { title: 'Resumind | Review ' },
@@ -11,40 +13,122 @@ export const meta = () => ([
 ])
 
 const Resume = () => {
-    const { auth, isLoading, fs, kv } = usePuterStore();
+    const { auth, isLoading, fs, ai, kv } = usePuterStore();
     const { id } = useParams();
     const [imageUrl, setImageUrl] = useState('');
     const [resumeUrl, setResumeUrl] = useState('');
     const [feedback, setFeedback] = useState<Feedback | null>(null);
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const [resumeData, setResumeData] = useState<any>(null);
+    const [analysisError, setAnalysisError] = useState<string | null>(null);
     const navigate = useNavigate();
 
     useEffect(() => {
         if(!isLoading && !auth.isAuthenticated) navigate(`/auth?next=/resume/${id}`);
     }, [isLoading])
 
+    const handleRunAnalysis = async (data: any) => {
+        if (!data?.resumePath) return;
+        setIsAnalyzing(true);
+        setAnalysisError(null);
+
+        try {
+            const feedbackResponse = await ai.feedback(
+                data.resumePath,
+                prepareInstructions({
+                    jobTitle: data.jobTitle || '',
+                    jobDescription: data.jobDescription || ''
+                })
+            );
+
+            if (!feedbackResponse) {
+                setIsAnalyzing(false);
+                setAnalysisError("Failed to get feedback from AI. Please try again.");
+                return;
+            }
+
+            let feedbackText = '';
+            if (typeof feedbackResponse === 'string') {
+                feedbackText = feedbackResponse;
+            } else if (feedbackResponse.message?.content) {
+                feedbackText = typeof feedbackResponse.message.content === 'string'
+                    ? feedbackResponse.message.content
+                    : (Array.isArray(feedbackResponse.message.content)
+                        ? feedbackResponse.message.content.map((c: any) => typeof c === 'string' ? c : c?.text || '').join('\n')
+                        : '');
+            } else if ((feedbackResponse as any).text) {
+                feedbackText = (feedbackResponse as any).text;
+            }
+
+            const parsed = parseFeedbackJSON(feedbackText);
+            if (!parsed) {
+                setIsAnalyzing(false);
+                setAnalysisError("Failed to parse AI response. Please try again.");
+                return;
+            }
+
+            data.feedback = parsed;
+            await kv.set(`resume:${id}`, JSON.stringify(data));
+            setFeedback(parsed);
+            setIsAnalyzing(false);
+        } catch (err) {
+            console.error("Analysis error:", err);
+            setIsAnalyzing(false);
+            setAnalysisError(err instanceof Error ? err.message : "Error analyzing resume");
+        }
+    };
+
     useEffect(() => {
         const loadResume = async () => {
+            if (!id) return;
             const resume = await kv.get(`resume:${id}`);
 
             if(!resume) return;
 
-            const data = JSON.parse(resume);
+            let data: any;
+            try {
+                data = JSON.parse(resume);
+                setResumeData(data);
+            } catch (err) {
+                console.error("Failed to parse resume JSON:", err);
+                return;
+            }
 
-            const resumeBlob = await fs.read(data.resumePath);
-            if(!resumeBlob) return;
+            // Immediately set feedback if available so user sees review instantly
+            if (data.feedback) {
+                if (typeof data.feedback === 'object' && 'overallScore' in data.feedback) {
+                    setFeedback(normalizeFeedback(data.feedback));
+                } else if (typeof data.feedback === 'string' && data.feedback.trim().startsWith('{')) {
+                    const parsed = parseFeedbackJSON(data.feedback);
+                    if (parsed) {
+                        setFeedback(parsed);
+                    }
+                }
+            }
 
-            const pdfBlob = new Blob([resumeBlob], { type: 'application/pdf' });
-            const resumeUrl = URL.createObjectURL(pdfBlob);
-            setResumeUrl(resumeUrl);
+            // Safely load PDF blob (don't block feedback rendering)
+            if (data.resumePath) {
+                fs.read(data.resumePath)
+                    .then((resumeBlob) => {
+                        if (resumeBlob) {
+                            const pdfBlob = new Blob([resumeBlob], { type: 'application/pdf' });
+                            setResumeUrl(URL.createObjectURL(pdfBlob));
+                        }
+                    })
+                    .catch((err) => console.error("Error reading resume PDF:", err));
+            }
 
-            const imageBlob = await fs.read(data.imagePath);
-            if(!imageBlob) return;
-            const imageUrl = URL.createObjectURL(imageBlob);
-            setImageUrl(imageUrl);
-
-            setFeedback(data.feedback);
-            console.log({resumeUrl, imageUrl, feedback: data.feedback });
-        }
+            // Safely load image blob (don't block feedback rendering)
+            if (data.imagePath) {
+                fs.read(data.imagePath)
+                    .then((imageBlob) => {
+                        if (imageBlob) {
+                            setImageUrl(URL.createObjectURL(imageBlob));
+                        }
+                    })
+                    .catch((err) => console.error("Error reading resume image:", err));
+            }
+        };
 
         loadResume();
     }, [id]);
@@ -80,7 +164,27 @@ const Resume = () => {
                             <Details feedback={feedback} />
                         </div>
                     ) : (
-                        <img src="/images/resume-scan-2.gif" className="w-full" />
+                        <div className="flex flex-col items-center justify-center gap-4 py-8">
+                            <img src="/images/resume-scan-2.gif" className="w-[300px]" alt="Scanning resume" />
+                            {isAnalyzing ? (
+                                <p className="text-lg text-gray-600 font-medium animate-pulse">Analyzing resume with AI...</p>
+                            ) : (
+                                <div className="flex flex-col items-center gap-3">
+                                    <p className="text-gray-600 text-center">
+                                        {analysisError ? analysisError : "Review is not available yet."}
+                                    </p>
+                                    {resumeData?.resumePath && (
+                                        <button
+                                            type="button"
+                                            onClick={() => handleRunAnalysis(resumeData)}
+                                            className="primary-button"
+                                        >
+                                            Generate AI Review Now
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                        </div>
                     )}
                 </section>
             </div>

@@ -3,6 +3,8 @@ import ScoreCircle from "~/components/ScoreCircle";
 import {useEffect, useState} from "react";
 import {usePuterStore} from "~/lib/puter";
 
+import {parseFeedbackJSON} from "~/lib/utils";
+
 const ResumeCard = ({ resume: { id, companyName, jobTitle, feedback, imagePath } }: { resume: Resume }) => {
     const { fs } = usePuterStore();
     const [resumeUrl, setResumeUrl] = useState('');
@@ -18,6 +20,15 @@ const ResumeCard = ({ resume: { id, companyName, jobTitle, feedback, imagePath }
         loadResume();
     }, [imagePath]);
 
+    let validFeedback: Feedback | null = null;
+    if (feedback) {
+        if (typeof feedback === 'object' && 'overallScore' in feedback) {
+            validFeedback = feedback as Feedback;
+        } else if (typeof feedback === 'string' && feedback.trim().startsWith('{')) {
+            validFeedback = parseFeedbackJSON(feedback);
+        }
+    }
+
     return (
         <Link to={`/resume/${id}`} className="resume-card animate-in fade-in duration-1000">
             <div className="resume-card-header">
@@ -27,7 +38,13 @@ const ResumeCard = ({ resume: { id, companyName, jobTitle, feedback, imagePath }
                     {!companyName && !jobTitle && <h2 className="!text-black font-bold">Resume</h2>}
                 </div>
                 <div className="flex-shrink-0">
-                    <ScoreCircle score={feedback.overallScore} />
+                    {validFeedback ? (
+                        <ScoreCircle score={validFeedback.overallScore} />
+                    ) : (
+                        <div className="flex items-center justify-center w-12 h-12 rounded-full bg-gray-100">
+                            <span className="text-xs text-gray-400">...</span>
+                        </div>
+                    )}
                 </div>
             </div>
             {resumeUrl && (
